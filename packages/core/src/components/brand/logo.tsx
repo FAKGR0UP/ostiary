@@ -9,8 +9,10 @@ import { cn } from "@ostiary/core/lib/utils";
 export function LogoMark({ className }: { className?: string }) {
   return (
     <svg viewBox={logoMark.viewBox} aria-hidden className={cn("size-7 shrink-0", className)}>
-      <rect width="32" height="32" rx={logoMark.radius} className="fill-[var(--brand-tile)]" />
-      <path d={logoMark.path} fillRule="evenodd" className="fill-[var(--brand-mark)]" />
+      <rect width="3000" height="3000" rx={logoMark.radius} className="fill-[var(--brand-tile)]" />
+      <g transform={logoMark.transform}>
+        <path d={logoMark.path} className="fill-[var(--brand-mark)]" />
+      </g>
     </svg>
   );
 }
