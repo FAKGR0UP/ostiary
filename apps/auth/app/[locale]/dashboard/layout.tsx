@@ -29,7 +29,7 @@ export default async function DashboardLayout({
 }>) {
   const { locale } = await params;
 
-  const { session, hasOrganizations } = await getDashboardContext();
+  const { session, hasOrganizations, showApiKeys } = await getDashboardContext();
 
   const sessionUser = session?.user;
   if (!sessionUser) {
@@ -45,11 +45,13 @@ export default async function DashboardLayout({
   return (
     <DashboardShell
       user={{
+        id: sessionUser.id,
         name: sessionUser.name ?? "",
         email: sessionUser.email,
       }}
       isAdmin={isAdmin}
       showOrganizations={hasOrganizations}
+      showApiKeys={showApiKeys}
       impersonation={
         session?.session.impersonatedBy
           ? { userId: sessionUser.id, adminAppUrl: env.ADMIN_APP_URL ?? null }

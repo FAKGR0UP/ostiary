@@ -1,5 +1,6 @@
 import { toNextJsHandler } from "better-auth/next-js";
 
+import { withRateLimitHeaders } from "@ostiary/core/lib/rate-limit";
 import { auth } from "@/lib/auth";
 
 /**
@@ -31,22 +32,19 @@ const ALLOWED_PATHS = new Set([
   "/organization/cancel-invitation",
   "/organization/remove-member",
   "/organization/update-member-role",
-  // OAuth clients and consents
+  // OAuth clients (admins only; changes go through /api/admin/oauth-clients) and consents
   "/oauth2/get-clients",
   "/oauth2/get-client",
-  "/oauth2/delete-client",
-  "/oauth2/client/rotate-secret",
   "/oauth2/get-consents",
   "/oauth2/get-consent",
   "/oauth2/update-consent",
   "/oauth2/delete-consent",
-  // Enterprise SSO provider management (the IdP callback itself stays on the auth app)
+  // Enterprise SSO: registering an OIDC provider. Everything else about providers goes through
+  // the console's server actions; the IdP callback itself stays on the auth app.
   "/sso/register",
-  "/sso/providers",
-  "/sso/get-provider",
 ]);
 
-const handlers = toNextJsHandler(auth);
+const handlers = withRateLimitHeaders(toNextJsHandler(auth));
 
 function notAllowed(request: Request): Response | null {
   const path = new URL(request.url).pathname.replace(/^\/api\/auth/, "");

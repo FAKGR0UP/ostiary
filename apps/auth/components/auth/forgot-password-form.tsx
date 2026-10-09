@@ -22,15 +22,27 @@ import {
 import { Input } from "@ostiary/core/components/ui/input";
 import { Link } from "@/i18n/navigation";
 import { authClient } from "@/lib/auth-client";
+import { useCaptcha } from "@/components/auth/captcha";
+import { rateLimitMessage } from "@ostiary/core/lib/rate-limit-message";
+import type { CaptchaConfig } from "@ostiary/core/lib/captcha-providers";
+import { withAppContext, type AppLink } from "@/lib/app-links";
 
 export function ForgotPasswordForm({
   className,
+  captcha: captchaConfig = null,
+  appLink = null,
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & {
+  captcha?: CaptchaConfig | null;
+  /** Set during an app's sign-in: the reset link and the way back keep the app. */
+  appLink?: AppLink;
+}) {
   const t = useTranslations("auth.forgotPassword");
+  const tLimit = useTranslations("rateLimit");
   const locale = useLocale();
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const captcha = useCaptcha(captchaConfig);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -39,22 +51,25 @@ export function ForgotPasswordForm({
       toast.error(t("errors.emailRequired"));
       return;
     }
+    const headers = captcha.headers();
+    if (!headers) return;
     setIsSubmitting(true);
     try {
       const redirectTo = new URL(
-        `/${locale}/reset-password`,
+        withAppContext(`/${locale}/reset-password`, appLink),
         window.location.origin,
       ).href;
-      const { error } = await authClient.requestPasswordReset({
-        email: trimmed,
-        redirectTo,
-      });
+      const { error } = await authClient.requestPasswordReset(
+        { email: trimmed, redirectTo },
+        { headers },
+      );
       if (error) {
-        toast.error(error.message ?? t("errors.requestFailed"));
+        toast.error(captcha.errorMessage(error.code) ?? rateLimitMessage(error, tLimit) ?? error.message ?? t("errors.requestFailed"));
         return;
       }
       toast.success(t("emailSent"));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -83,6 +98,7 @@ export function ForgotPasswordForm({
                 />
                 <FieldDescription>{t("emailHint")}</FieldDescription>
               </Field>
+              {captcha.widget}
               <Field>
                 <Button
                   type="submit"
@@ -96,7 +112,7 @@ export function ForgotPasswordForm({
                 </Button>
                 <FieldDescription className="text-center">
                   <Link
-                    href="/login"
+                    href={withAppContext("/login", appLink)}
                     className="underline-offset-4 hover:underline"
                   >
                     {t("backToLogin")}

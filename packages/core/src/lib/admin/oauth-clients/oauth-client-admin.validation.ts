@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { API_SCOPES, ALL_SCOPES } from "@ostiary/core/lib/oauth-scopes";
+import { ENV_API_SCOPES, OIDC_SCOPES } from "@ostiary/core/lib/oauth-scopes";
 
-import type {
-  CreateOAuthClientAdminInput,
-  UpdateOAuthClientAdminInput,
+import {
+  DEVICE_CODE_GRANT_TYPE,
+  type CreateOAuthClientAdminInput,
+  type UpdateOAuthClientAdminInput,
 } from "@ostiary/core/lib/admin/oauth-clients/oauth-client-admin.types";
 
 export type BodyParseResult<T> =
@@ -26,6 +27,7 @@ const oauthGrantTypeSchema = z.enum([
   "authorization_code",
   "client_credentials",
   "refresh_token",
+  DEVICE_CODE_GRANT_TYPE,
 ]);
 
 const DEFAULT_GRANT_TYPES = [
@@ -33,49 +35,56 @@ const DEFAULT_GRANT_TYPES = [
   "refresh_token",
 ] as const;
 
-export const createOAuthClientBodySchema = z
-  .object({
-    redirect_uris: z.array(z.string().min(1)).min(1),
-    client_name: z.string().optional(),
-    token_endpoint_auth_method: tokenEndpointAuthMethodSchema.default(
-      "client_secret_basic",
-    ),
-    grant_types: z
-      .array(oauthGrantTypeSchema)
-      .optional()
-      .default([...DEFAULT_GRANT_TYPES]),
-    // Only "code" exists here. Better Auth 1.7 requires it to match the grants: present with
-    // authorization_code, absent otherwise (machine clients), so it is derived below.
-    response_types: z.array(z.literal("code")).optional(),
-    type: oauthClientApplicationTypeSchema.optional(),
-    skip_consent: z.boolean().optional().default(false),
-    scope: z
-      .string()
-      .trim()
-      .min(1)
-      .refine(
-        (s) => s.split(/\s+/).every((sc) => (ALL_SCOPES as readonly string[]).includes(sc)),
-        { message: `scope must only contain: ${ALL_SCOPES.join(", ")}` },
-      )
-      .optional(),
-  })
-  .strict()
-  .superRefine((v, ctx) => {
-    // A client without scopes may request every server scope, so machine
-    // clients must be limited to explicit API scopes.
-    if (!v.grant_types.includes("client_credentials")) return;
-    const scopes = v.scope?.split(/\s+/) ?? [];
-    if (scopes.length === 0 || !scopes.every((sc) => (API_SCOPES as readonly string[]).includes(sc))) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["scope"],
-        message: `client_credentials clients need explicit API scopes: ${API_SCOPES.join(", ")}`,
-      });
-    }
-  });
+/**
+ * Body schema for creating a client. `apiScopes` are the API scopes currently registered
+ * (`currentApiScopes()`); they change at runtime, so the schema is built per request.
+ */
+export const createOAuthClientBodySchema = (apiScopes: readonly string[] = ENV_API_SCOPES) => {
+  const allScopes: readonly string[] = [...OIDC_SCOPES, ...apiScopes];
+  return z
+    .object({
+      redirect_uris: z.array(z.string().min(1)).min(1),
+      client_name: z.string().optional(),
+      token_endpoint_auth_method: tokenEndpointAuthMethodSchema.default(
+        "client_secret_basic",
+      ),
+      grant_types: z
+        .array(oauthGrantTypeSchema)
+        .optional()
+        .default([...DEFAULT_GRANT_TYPES]),
+      // Only "code" exists here. Better Auth 1.7 requires it to match the grants: present with
+      // authorization_code, absent otherwise (machine clients), so it is derived below.
+      response_types: z.array(z.literal("code")).optional(),
+      type: oauthClientApplicationTypeSchema.optional(),
+      skip_consent: z.boolean().optional().default(false),
+      scope: z
+        .string()
+        .trim()
+        .min(1)
+        .refine(
+          (s) => s.split(/\s+/).every((sc) => allScopes.includes(sc)),
+          { message: `scope must only contain: ${allScopes.join(", ")}` },
+        )
+        .optional(),
+    })
+    .strict()
+    .superRefine((v, ctx) => {
+      // A client without scopes may request every server scope, so machine
+      // clients must be limited to explicit API scopes.
+      if (!v.grant_types.includes("client_credentials")) return;
+      const scopes = v.scope?.split(/\s+/) ?? [];
+      if (scopes.length === 0 || !scopes.every((sc) => apiScopes.includes(sc))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["scope"],
+          message: `client_credentials clients need explicit API scopes: ${apiScopes.join(", ")}`,
+        });
+      }
+    });
+};
 
 export type CreateOAuthClientBodyInput = z.input<
-  typeof createOAuthClientBodySchema
+  ReturnType<typeof createOAuthClientBodySchema>
 >;
 
 export const updateOAuthClientBodyTransformSchema = z
@@ -83,13 +92,15 @@ export const updateOAuthClientBodyTransformSchema = z
     client_name: z.string().optional(),
     redirect_uris: z.array(z.string().min(1)).min(1).optional(),
     skip_consent: z.boolean().optional(),
+    device_code: z.boolean().optional(),
   })
   .strict()
   .refine(
     (data) =>
       data.client_name !== undefined ||
       data.redirect_uris !== undefined ||
-      data.skip_consent !== undefined,
+      data.skip_consent !== undefined ||
+      data.device_code !== undefined,
     { message: "No updatable fields provided" },
   )
   .transform((data): UpdateOAuthClientAdminInput => {
@@ -103,16 +114,33 @@ export const updateOAuthClientBodyTransformSchema = z
     if (data.skip_consent !== undefined) {
       out.skip_consent = data.skip_consent;
     }
+    if (data.device_code !== undefined) {
+      out.device_code = data.device_code;
+    }
     return out;
   });
+
+/**
+ * A client's grants with the device code grant added or removed. A client stored without grants
+ * has Better Auth's default, authorization_code.
+ */
+export function withDeviceCodeGrant(
+  grantTypes: readonly string[] | null | undefined,
+  enabled: boolean,
+): string[] {
+  const current = grantTypes?.length ? [...grantTypes] : ["authorization_code"];
+  const others = current.filter((grant) => grant !== DEVICE_CODE_GRANT_TYPE);
+  return enabled ? [...others, DEVICE_CODE_GRANT_TYPE] : others;
+}
 
 /**
  * Validates and normalizes the JSON body for POST /api/admin/oauth-clients.
  */
 export function parseCreateOAuthClientBody(
   raw: unknown,
+  apiScopes?: readonly string[],
 ): BodyParseResult<CreateOAuthClientAdminInput> {
-  const parsed = createOAuthClientBodySchema.safeParse(raw);
+  const parsed = createOAuthClientBodySchema(apiScopes).safeParse(raw);
   if (!parsed.success) {
     const first = parsed.error.errors[0];
     const msg = first

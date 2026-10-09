@@ -22,44 +22,48 @@ import {
 } from "@ostiary/core/components/ui/field"
 import { Input } from "@ostiary/core/components/ui/input"
 import { Link } from "@/i18n/navigation"
-import type { SocialProvider } from "@ostiary/core/lib/social-provider-meta"
+import type { SocialProviderOption } from "@ostiary/core/lib/social-provider-meta"
 import { brand } from "@ostiary/core/lib/brand"
 import { SocialSignInButtons } from "@/components/auth/social-sign-in-buttons"
+import { GoogleOneTap } from "@/components/auth/google-one-tap"
+import type { GoogleOneTapConfig } from "@ostiary/core/lib/social-provider-meta"
 import { authClient } from "@/lib/auth-client"
 import { ResendVerification } from "@/components/auth/resend-verification"
-/**
- * Only follow callbacks to this app or the admin app. The passkey path navigates on the
- * client, so without this check a crafted link could send a fresh session elsewhere.
- */
-function safeCallbackURL(raw: string | null, fallback: string): string {
-  if (!raw) return fallback
-  if (raw.startsWith("/") && !raw.startsWith("//")) return raw
-  try {
-    const target = new URL(raw)
-    const allowed = [
-      typeof window === "undefined" ? undefined : window.location.origin,
-      process.env.NEXT_PUBLIC_APP_URL,
-      process.env.NEXT_PUBLIC_ADMIN_APP_URL,
-    ]
-      .filter((o): o is string => Boolean(o))
-      .map((o) => new URL(o).origin)
-    return allowed.includes(target.origin) ? raw : fallback
-  } catch {
-    return fallback
-  }
+import { EmailCodeSignIn } from "@/components/auth/email-code-sign-in"
+import { useCaptcha } from "@/components/auth/captcha"
+import type { CaptchaConfig } from "@ostiary/core/lib/captcha-providers"
+import { safeCallbackURL } from "@/lib/safe-callback-url"
+import { rateLimitMessage } from "@ostiary/core/lib/rate-limit-message"
+import { withAppContext, type AppLink } from "@/lib/app-links"
+
+/** Sign-in responses for accounts with two-factor authentication: no session yet. */
+function needsTwoFactor(data: unknown): boolean {
+  return typeof data === "object" && data !== null && "twoFactorRedirect" in data
 }
 
 export function LoginForm({
   className,
   socialProviders = [],
+  captcha: captchaConfig = null,
+  oneTap = null,
+  appLink = null,
   ...props
-}: React.ComponentProps<"div"> & { socialProviders?: SocialProvider[] }) {
+}: React.ComponentProps<"div"> & {
+  socialProviders?: SocialProviderOption[]
+  captcha?: CaptchaConfig | null
+  oneTap?: GoogleOneTapConfig | null
+  /** Set during an app's sign-in: sign-up and password reset keep the app (see lib/app-links). */
+  appLink?: AppLink
+}) {
   const t = useTranslations("auth.login")
+  const tLimit = useTranslations("rateLimit")
   const tSso = useTranslations("sso");
   const locale = useLocale()
   const searchParams = useSearchParams()
   const callbackURL = safeCallbackURL(searchParams.get("callbackURL"), `/${locale}`)
   const showPostRegisterHint = searchParams.get("registered") === "1"
+  // Signing in one more account (account menu, select-account page): the others stay signed in.
+  const addingAccount = searchParams.get("addAccount") === "1"
   // Set by Better Auth when a social sign-in fails (errorCallbackURL).
   const socialError = searchParams.get("error")
   const tSocial = useTranslations("auth.social")
@@ -69,6 +73,9 @@ export function LoginForm({
   const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const [lastUsedMethod, setLastUsedMethod] = useState<string | null>(null);
   const [needsVerification, setNeedsVerification] = useState(false);
+  // "Email me a sign-in code" replaces the card until the user goes back to their password.
+  const [mode, setMode] = useState<"password" | "code">("password");
+  const captcha = useCaptcha(captchaConfig);
 
   useEffect(() => {
     const raw = authClient.getLastUsedLoginMethod();
@@ -103,6 +110,11 @@ export function LoginForm({
   function handleSignInError(ctx: {
     error: { status?: number; code?: string; message?: string };
   }) {
+    const limited = rateLimitMessage(ctx.error, tLimit);
+    if (limited) {
+      toast.error(limited);
+      return;
+    }
     const status = ctx.error.status;
     const code = ctx.error.code;
     if (
@@ -114,7 +126,7 @@ export function LoginForm({
       setNeedsVerification(true);
       return;
     }
-    toast.error(ctx.error.message || t("errors.signInFailed"));
+    toast.error(captcha.errorMessage(code) ?? (ctx.error.message || t("errors.signInFailed")));
   }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -124,21 +136,27 @@ export function LoginForm({
       toast.error(t("errors.signInFailed"));
       return;
     }
+    const headers = captcha.headers();
+    if (!headers) return;
     setIsSubmitting(true);
     try {
       const useEmail = trimmed.includes("@");
-      if (useEmail) {
-        await authClient.signIn.email(
-          { email: trimmed, password, callbackURL },
-          { onError: handleSignInError },
-        );
-      } else {
-        await authClient.signIn.username(
-          { username: trimmed, password, callbackURL },
-          { onError: handleSignInError },
-        );
+      const { data } = useEmail
+        ? await authClient.signIn.email(
+            { email: trimmed, password, callbackURL },
+            { headers, onError: handleSignInError },
+          )
+        : await authClient.signIn.username(
+            { username: trimmed, password, callbackURL },
+            { headers, onError: handleSignInError },
+          );
+      if (needsTwoFactor(data)) {
+        // Same query string: it carries the callbackURL and, for an app's sign-in, the
+        // signed OAuth request that resumes once the code is verified.
+        window.location.assign(`/${locale}/two-factor${window.location.search}`);
       }
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -166,6 +184,21 @@ export function LoginForm({
     }
   }
 
+  if (mode === "code") {
+    return (
+      <div className={cn("flex flex-col gap-6", className)} {...props}>
+        <EmailCodeSignIn
+          defaultEmail={loginIdentifier.includes("@") ? loginIdentifier.trim() : undefined}
+          callbackURL={callbackURL}
+          captcha={captchaConfig}
+          onUsePassword={() => setMode("password")}
+          // Same query string as after a password: callbackURL and any signed OAuth request.
+          onTwoFactor={() => window.location.assign(`/${locale}/two-factor${window.location.search}`)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
       {showPostRegisterHint && !needsVerification ? (
@@ -185,7 +218,7 @@ export function LoginForm({
       <Card>
         <CardHeader>
           <CardTitle>{t("title")}</CardTitle>
-          <CardDescription>{t("description")}</CardDescription>
+          <CardDescription>{addingAccount ? t("addAccountDescription") : t("description")}</CardDescription>
           {lastUsedMethod ? (
             <p className="text-xs text-muted-foreground" role="note">
               {lastUsedMethod === "email"
@@ -194,8 +227,12 @@ export function LoginForm({
                   ? t("lastUsedHintUsername")
                   : lastUsedMethod === "passkey"
                     ? t("lastUsedHintPasskey")
-                    : t("lastUsedHintOther", {
-                        method: formatLastUsedMethodLabel(lastUsedMethod),
+                    : lastUsedMethod === "email-otp"
+                      ? t("lastUsedHintEmailCode")
+                      : t("lastUsedHintOther", {
+                        method:
+                          socialProviders.find((p) => p.id === lastUsedMethod)?.name ??
+                          formatLastUsedMethodLabel(lastUsedMethod),
                       })}
             </p>
           ) : null}
@@ -231,7 +268,7 @@ export function LoginForm({
                     {t("passwordLabel")}
                   </FieldLabel>
                   <Link
-                    href="/forgot-password"
+                    href={withAppContext("/forgot-password", appLink)}
                     className="max-w-[min(100%,14rem)] text-right text-xs text-muted-foreground underline-offset-4 hover:underline"
                   >
                     {t("forgotPasswordLink")}
@@ -247,6 +284,7 @@ export function LoginForm({
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </Field>
+              {captcha.widget}
               <Field>
                 <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
                   {isSubmitting ? (
@@ -276,20 +314,42 @@ export function LoginForm({
                     </Badge>
                   ) : null}
                 </Button>
+                <Button
+                  type="button"
+                  variant={lastUsedMethod === "email-otp" ? "default" : "outline"}
+                  className="mt-2 w-full sm:w-auto"
+                  disabled={isSubmitting || passkeySubmitting}
+                  onClick={() => setMode("code")}
+                >
+                  {t("emailCode")}
+                  {lastUsedMethod === "email-otp" ? (
+                    <Badge variant="secondary" className="ml-2 text-xs font-normal">
+                      {t("lastUsedBadge")}
+                    </Badge>
+                  ) : null}
+                </Button>
                 <SocialSignInButtons
                   providers={socialProviders}
                   callbackURL={callbackURL}
                   lastUsedMethod={lastUsedMethod}
                   disabled={isSubmitting || passkeySubmitting}
                 />
+                {/* Not when adding an account: someone is already signed in here. */}
+                <GoogleOneTap config={addingAccount ? null : oneTap} callbackURL={callbackURL} context="signin" />
                 {socialError ? (
                   <FieldDescription className="text-center text-destructive" role="alert">
-                    {socialError === "account_not_linked" ? tSocial("notLinked", { name: brand.name }) : tSocial("error")}
+                    {socialError === "account_not_linked"
+                      ? tSocial("notLinked", { name: brand.name })
+                      : socialError === "email_not_found"
+                        ? tSocial("noEmail")
+                        : socialError === "signup_disabled"
+                          ? tSocial("signUpDisabled")
+                          : tSocial("error")}
                   </FieldDescription>
                 ) : null}
                 <FieldDescription className="text-center">
                   {t("noAccount")}{" "}
-                  <Link href="/signup" className="underline-offset-4 hover:underline">
+                  <Link href={withAppContext("/signup", appLink)} className="underline-offset-4 hover:underline">
                     {t("signUpLink")}
                   </Link>
                 </FieldDescription>

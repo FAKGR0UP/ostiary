@@ -3,12 +3,16 @@ import { brand } from "@ostiary/core/lib/brand";
 import { Geist_Mono, Instrument_Sans, Instrument_Serif } from "next/font/google";
 import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getMessages, getTranslations, setRequestLocale } from "next-intl/server";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { Providers } from "@/app/providers";
 import { APP_TIME_ZONE } from "@ostiary/core/i18n/constants";
 import { getHtmlLang, isRtlLocale } from "@ostiary/core/i18n/locale-html";
 import { locales, routing, type AppLocale } from "@ostiary/core/i18n/routing";
+import { VercelAnalytics } from "@ostiary/core/components/vercel-analytics";
+import { NONCE_HEADER } from "@ostiary/core/lib/csp";
+import { env } from "@ostiary/core/lib/env";
 import { getBaseURL } from "@ostiary/core/lib/url";
 import { cn } from "@ostiary/core/lib/utils";
 
@@ -75,6 +79,9 @@ export default async function LocaleLayout({ children, params }: Props) {
 
   setRequestLocale(locale);
 
+  // The CSP nonce set by proxy.ts. Reading it also renders every page per request, which a
+  // nonce needs (a prerendered page would carry none).
+  const nonce = (await headers()).get(NONCE_HEADER) ?? undefined;
   const messages = await getMessages();
   const appLocale = locale as AppLocale;
   const htmlLang = getHtmlLang(appLocale);
@@ -100,8 +107,9 @@ export default async function LocaleLayout({ children, params }: Props) {
           messages={messages}
           timeZone={APP_TIME_ZONE}
         >
-          <Providers>{children}</Providers>
+          <Providers nonce={nonce}>{children}</Providers>
         </NextIntlClientProvider>
+        {env.VERCEL_ANALYTICS === "true" ? <VercelAnalytics /> : null}
       </body>
     </html>
   );
