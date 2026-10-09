@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { CheckCircle2, Copy, Loader2, Pencil, ShieldAlert, Trash2 } from "lucide-react";
+import { CheckCircle2, Copy, FileKey2, Loader2, Pencil, ShieldAlert, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { Badge } from "@ostiary/core/components/ui/badge";
@@ -32,7 +32,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@ostiary/core/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ostiary/core/components/ui/tabs";
 import { authClient } from "@/lib/auth-client";
+import {
+  SamlDetailsDialogBody,
+  SamlEditDialogBody,
+  SamlRegisterForm,
+  type SamlProviderDetails,
+} from "@/components/admin/sso/admin-saml";
 import {
   checkDomainVerification,
   deleteSsoProvider,
@@ -47,19 +54,22 @@ export type SsoProviderRow = {
   domainVerified: boolean;
   organizationId: string | null;
   organizationName: string | null;
+  protocol: "oidc" | "saml";
+  saml: SamlProviderDetails | null;
 };
 
 type Org = { id: string; name: string };
 const NO_ORG = "__none__";
 
 function OrganizationSelect({ id, value, onChange, organizations, disabled }: { id: string; value: string; onChange: (v: string) => void; organizations: Org[]; disabled?: boolean }) {
+  const t = useTranslations("sso.panel");
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger id={id} className="w-full">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={NO_ORG}>No organization</SelectItem>
+        <SelectItem value={NO_ORG}>{t("noOrganization")}</SelectItem>
         {organizations.map((o) => (
           <SelectItem key={o.id} value={o.id}>
             {o.name}
@@ -71,8 +81,8 @@ function OrganizationSelect({ id, value, onChange, organizations, disabled }: { 
 }
 
 /**
- * Registers OIDC identity providers and manages existing ones (domain verification, edit,
- * delete). The IdP must redirect back to `callbackBase`, the auth app.
+ * Registers OIDC and SAML 2.0 identity providers and manages existing ones (domain
+ * verification, edit, delete). The IdP must send people back to `callbackBase`, the auth app.
  */
 export function AdminSsoPanel({
   callbackBase,
@@ -84,7 +94,10 @@ export function AdminSsoPanel({
   organizations: Org[];
 }) {
   const t = useTranslations("sso");
+  const ts = useTranslations("sso.saml");
+  const tp = useTranslations("sso.panel");
   const router = useRouter();
+  const [protocol, setProtocol] = React.useState<"oidc" | "saml">("oidc");
   const [providerId, setProviderId] = React.useState("");
   const [issuer, setIssuer] = React.useState("");
   const [domain, setDomain] = React.useState("");
@@ -133,9 +146,18 @@ export function AdminSsoPanel({
       <Card className="h-fit border-border/80 shadow-sm">
         <CardHeader>
           <CardTitle>{t("registerTitle")}</CardTitle>
-          <CardDescription>{t("registerDescription")}</CardDescription>
+          <CardDescription>{protocol === "saml" ? ts("registerDescription") : t("registerDescription")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <Tabs value={protocol} onValueChange={(v) => setProtocol(v as "oidc" | "saml")}>
+            <TabsList aria-label={ts("protocol")}>
+              <TabsTrigger value="oidc">OIDC</TabsTrigger>
+              <TabsTrigger value="saml">SAML 2.0</TabsTrigger>
+            </TabsList>
+            <TabsContent value="saml" className="pt-2">
+              <SamlRegisterForm authAppUrl={callbackBase} organizations={organizations} organizationSelect={(props) => <OrganizationSelect {...props} />} />
+            </TabsContent>
+            <TabsContent value="oidc" className="space-y-4 pt-2">
           <form onSubmit={handleRegister}>
             <FieldGroup>
               <Field>
@@ -176,13 +198,15 @@ export function AdminSsoPanel({
             <p className="font-medium text-foreground">{t("callbackTitle")}</p>
             <p className="mt-1 break-all font-mono text-muted-foreground">{callbackUrl}</p>
           </div>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 
       <Card className="h-fit border-border/80 shadow-sm">
         <CardHeader>
           <CardTitle>{t("providersTitle")}</CardTitle>
-          <CardDescription>A provider only accepts sign-ins after its email domain is verified with a DNS record.</CardDescription>
+          <CardDescription>{tp("providersDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           {providers.length === 0 ? (
@@ -190,7 +214,7 @@ export function AdminSsoPanel({
           ) : (
             <ul className="space-y-3">
               {providers.map((p) => (
-                <ProviderItem key={p.providerId} provider={p} organizations={organizations} />
+                <ProviderItem key={p.providerId} provider={p} organizations={organizations} authAppUrl={callbackBase} />
               ))}
             </ul>
           )}
@@ -200,9 +224,14 @@ export function AdminSsoPanel({
   );
 }
 
-function ProviderItem({ provider, organizations }: { provider: SsoProviderRow; organizations: Org[] }) {
+function ProviderItem({ provider, organizations, authAppUrl }: { provider: SsoProviderRow; organizations: Org[]; authAppUrl: string }) {
   const router = useRouter();
-  const [dialog, setDialog] = React.useState<"verify" | "edit" | "delete" | null>(null);
+  const t = useTranslations("sso");
+  const ts = useTranslations("sso.saml");
+  const tp = useTranslations("sso.panel");
+  const tc = useTranslations("admin.common");
+  const format = useFormatter();
+  const [dialog, setDialog] = React.useState<"verify" | "edit" | "delete" | "details" | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [record, setRecord] = React.useState<{ name: string; value: string } | null>(null);
   const [issuer, setIssuer] = React.useState(provider.issuer);
@@ -238,26 +267,40 @@ function ProviderItem({ provider, organizations }: { provider: SsoProviderRow; o
         <div className="min-w-0 space-y-1">
           <p className="flex items-center gap-2 text-sm font-medium">
             {provider.providerId}
+            <Badge variant="outline">{provider.protocol === "saml" ? "SAML" : "OIDC"}</Badge>
             {provider.domainVerified ? (
-              <Badge variant="secondary" className="gap-1"><CheckCircle2 className="size-3" aria-hidden />Verified</Badge>
+              <Badge variant="secondary" className="gap-1"><CheckCircle2 className="size-3" aria-hidden />{tp("verified")}</Badge>
             ) : (
-              <Badge variant="outline" className="gap-1"><ShieldAlert className="size-3" aria-hidden />Domain not verified</Badge>
+              <Badge variant="outline" className="gap-1"><ShieldAlert className="size-3" aria-hidden />{tp("domainNotVerified")}</Badge>
             )}
           </p>
           <p className="text-xs text-muted-foreground">
             {provider.domain}
             {provider.organizationName ? ` · ${provider.organizationName}` : ""}
           </p>
-          <p className="break-all font-mono text-xs text-muted-foreground">{provider.issuer}</p>
+          <p className="break-all font-mono text-xs text-muted-foreground">{provider.saml ? provider.saml.idpEntityId : provider.issuer}</p>
+          {provider.saml?.certificateExpiresAt ? (
+            <p className={provider.saml.certificateExpired ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+              {provider.saml.certificateExpired
+                ? ts("certExpired")
+                : ts("certExpires", { date: format.dateTime(new Date(provider.saml.certificateExpiresAt), { year: "numeric", month: "numeric", day: "numeric" }) })}
+            </p>
+          ) : null}
         </div>
         <div className="flex gap-1">
           {provider.domainVerified ? null : (
-            <Button type="button" size="sm" variant="outline" onClick={() => void openVerify()}>Verify domain</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => void openVerify()}>{tp("verifyDomain")}</Button>
           )}
-          <Button type="button" size="icon-sm" variant="ghost" aria-label={`Edit ${provider.providerId}`} onClick={() => setDialog("edit")}>
+          {provider.saml ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => setDialog("details")}>
+              <FileKey2 className="size-4" aria-hidden />
+              {ts("spDetails")}
+            </Button>
+          ) : null}
+          <Button type="button" size="icon-sm" variant="ghost" aria-label={tp("editLabel", { id: provider.providerId })} onClick={() => setDialog("edit")}>
             <Pencil className="size-4" aria-hidden />
           </Button>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label={`Delete ${provider.providerId}`} onClick={() => setDialog("delete")}>
+          <Button type="button" size="icon-sm" variant="ghost" aria-label={tp("deleteLabel", { id: provider.providerId })} onClick={() => setDialog("delete")}>
             <Trash2 className="size-4" aria-hidden />
           </Button>
         </div>
@@ -268,82 +311,94 @@ function ProviderItem({ provider, organizations }: { provider: SsoProviderRow; o
           {dialog === "verify" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Verify {provider.domain}</DialogTitle>
-                <DialogDescription>
-                  Ask the domain owner to add this TXT record in their DNS, then check it here. Sign-ins through this provider start working once it is verified.
-                </DialogDescription>
+                <DialogTitle>{tp("verifyTitle", { domain: provider.domain })}</DialogTitle>
+                <DialogDescription>{tp("verifyDescription")}</DialogDescription>
               </DialogHeader>
               {record ? (
                 <div className="space-y-3 text-sm">
-                  {[["Name", record.name], ["Value", record.value]].map(([label, value]) => (
+                  {[
+                    [tp("recordName"), tp("copyRecordName"), record.name],
+                    [tp("recordValue"), tp("copyRecordValue"), record.value],
+                  ].map(([label, copyLabel, value]) => (
                     <div key={label}>
                       <p className="text-xs font-medium text-muted-foreground">{label}</p>
                       <div className="mt-1 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
                         <code className="min-w-0 flex-1 break-all font-mono text-xs">{value}</code>
-                        <Button type="button" size="icon-sm" variant="ghost" aria-label={`Copy ${label}`} onClick={() => void navigator.clipboard.writeText(value!).then(() => toast.success("Copied"))}>
+                        <Button type="button" size="icon-sm" variant="ghost" aria-label={copyLabel} onClick={() => void navigator.clipboard.writeText(value!).then(() => toast.success(tc("copied")))}>
                           <Copy className="size-4" aria-hidden />
                         </Button>
                       </div>
                     </div>
                   ))}
-                  <p className="text-xs text-muted-foreground">The value stays valid for 7 days.</p>
+                  <p className="text-xs text-muted-foreground">{tp("recordValidity")}</p>
                 </div>
               ) : (
                 <Loader2 className="size-4 animate-spin" aria-hidden />
               )}
               <DialogFooter>
-                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>Close</Button>
-                <Button type="button" disabled={busy || !record} onClick={() => void run(() => checkDomainVerification(provider.providerId), "Domain verified")}>
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>{tc("close")}</Button>
+                <Button type="button" disabled={busy || !record} onClick={() => void run(() => checkDomainVerification(provider.providerId), tp("domainVerified"))}>
                   {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                  Check DNS
+                  {tp("checkDns")}
                 </Button>
               </DialogFooter>
             </>
+          ) : dialog === "details" && provider.saml ? (
+            <SamlDetailsDialogBody providerId={provider.providerId} details={provider.saml} authAppUrl={authAppUrl} onClose={() => setDialog(null)} />
+          ) : dialog === "edit" && provider.saml ? (
+            <SamlEditDialogBody
+              providerId={provider.providerId}
+              details={provider.saml}
+              domain={provider.domain}
+              organizationId={provider.organizationId}
+              organizations={organizations}
+              organizationSelect={(props) => <OrganizationSelect {...props} />}
+              onDone={() => setDialog(null)}
+              onBusy={setBusy}
+            />
           ) : dialog === "edit" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Edit {provider.providerId}</DialogTitle>
-                <DialogDescription>Changing the domain means it must be verified again. To change the client credentials, delete the provider and register it again.</DialogDescription>
+                <DialogTitle>{ts("editTitle", { id: provider.providerId })}</DialogTitle>
+                <DialogDescription>{tp("editDescription")}</DialogDescription>
               </DialogHeader>
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor={`issuer-${provider.providerId}`}>Issuer URL</FieldLabel>
+                  <FieldLabel htmlFor={`issuer-${provider.providerId}`}>{t("issuer")}</FieldLabel>
                   <Input id={`issuer-${provider.providerId}`} value={issuer} onChange={(e) => setIssuer(e.target.value)} disabled={busy} />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor={`domain-${provider.providerId}`}>Email domain</FieldLabel>
+                  <FieldLabel htmlFor={`domain-${provider.providerId}`}>{t("domain")}</FieldLabel>
                   <Input id={`domain-${provider.providerId}`} value={domain} onChange={(e) => setDomain(e.target.value)} disabled={busy} />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor={`org-${provider.providerId}`}>Organization</FieldLabel>
+                  <FieldLabel htmlFor={`org-${provider.providerId}`}>{tp("organization")}</FieldLabel>
                   <OrganizationSelect id={`org-${provider.providerId}`} value={orgId} onChange={setOrgId} organizations={organizations} disabled={busy} />
                 </Field>
               </FieldGroup>
               <DialogFooter>
-                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button>
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>{tc("cancel")}</Button>
                 <Button
                   type="button"
                   disabled={busy}
-                  onClick={() => void run(() => updateSsoProvider(provider.providerId, { issuer, domain, organizationId: orgId === NO_ORG ? null : orgId }), "Provider updated")}
+                  onClick={() => void run(() => updateSsoProvider(provider.providerId, { issuer, domain, organizationId: orgId === NO_ORG ? null : orgId }), ts("updated"))}
                 >
                   {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                  Save
+                  {tc("save")}
                 </Button>
               </DialogFooter>
             </>
           ) : dialog === "delete" ? (
             <>
               <DialogHeader>
-                <DialogTitle>Delete {provider.providerId}?</DialogTitle>
-                <DialogDescription>
-                  People with an {provider.domain} address can no longer sign in through this provider. Their accounts stay, and they can still use a password or passkey.
-                </DialogDescription>
+                <DialogTitle>{tp("deleteTitle", { id: provider.providerId })}</DialogTitle>
+                <DialogDescription>{tp("deleteDescription", { domain: provider.domain })}</DialogDescription>
               </DialogHeader>
               <DialogFooter>
-                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button>
-                <Button type="button" variant="destructive" disabled={busy} onClick={() => void run(() => deleteSsoProvider(provider.providerId), "Provider deleted")}>
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setDialog(null)}>{tc("cancel")}</Button>
+                <Button type="button" variant="destructive" disabled={busy} onClick={() => void run(() => deleteSsoProvider(provider.providerId), tp("providerDeleted"))}>
                   {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                  Delete
+                  {tc("delete")}
                 </Button>
               </DialogFooter>
             </>

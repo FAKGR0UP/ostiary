@@ -2,8 +2,10 @@
 
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
-import type { SocialProvider } from "@ostiary/core/lib/social-provider-meta"
+import type { SocialProviderOption } from "@ostiary/core/lib/social-provider-meta"
 import { SocialSignInButtons } from "@/components/auth/social-sign-in-buttons"
+import { GoogleOneTap } from "@/components/auth/google-one-tap"
+import type { GoogleOneTapConfig } from "@ostiary/core/lib/social-provider-meta"
 import { toast } from "sonner"
 import { Button } from "@ostiary/core/components/ui/button"
 import {
@@ -23,12 +25,29 @@ import { Input } from "@ostiary/core/components/ui/input"
 import { useEffect, useState } from "react"
 import { Link, useRouter } from "@/i18n/navigation"
 import { authClient } from "@/lib/auth-client"
+import { useCaptcha } from "@/components/auth/captcha"
+import type { CaptchaConfig } from "@ostiary/core/lib/captcha-providers"
+import { rateLimitMessage } from "@ostiary/core/lib/rate-limit-message"
+import { withAppContext, type AppLink } from "@/lib/app-links"
 
 export function SignupForm({
   socialProviders = [],
+  captcha: captchaConfig = null,
+  oneTap = null,
+  appLink = null,
   ...props
-}: React.ComponentProps<typeof Card> & { socialProviders?: SocialProvider[] }) {
+}: React.ComponentProps<typeof Card> & {
+  socialProviders?: SocialProviderOption[]
+  captcha?: CaptchaConfig | null
+  oneTap?: GoogleOneTapConfig | null
+  /**
+   * Set during an app's sign-in: the verification link and social sign-up restart the app's
+   * authorization request, and the login link keeps the app (see lib/app-links).
+   */
+  appLink?: AppLink
+}) {
   const t = useTranslations("auth.signup")
+  const tLimit = useTranslations("rateLimit")
   const locale = useLocale()
   const router = useRouter()
   const [email, setEmail] = useState<string>("");
@@ -41,6 +60,7 @@ export function SignupForm({
   >("idle");
   const [passwordMismatch, setPasswordMismatch] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const captcha = useCaptcha(captchaConfig)
 
   const resetForm = () => {
     setName("")
@@ -106,6 +126,9 @@ export function SignupForm({
       }
     }
 
+    const headers = captcha.headers()
+    if (!headers) return
+
     setIsSubmitting(true)
     try {
       await authClient.signUp.email(
@@ -114,16 +137,22 @@ export function SignupForm({
           password,
           name,
           username: trimmedUsername,
-          callbackURL: `/${locale}`,
+          callbackURL: appLink?.resumePath ?? `/${locale}`,
         },
         {
+          headers,
           onSuccess: () => {
             resetForm()
             toast.success(t("afterRegisterRedirect"))
-            router.push("/login?registered=1")
+            router.push(withAppContext("/login", appLink, { registered: "1" }))
           },
           onError(ctx) {
             const code = ctx.error.code
+            const captchaError = captcha.errorMessage(code) ?? rateLimitMessage(ctx.error, tLimit)
+            if (captchaError) {
+              toast.error(captchaError)
+              return
+            }
             if (code === "PASSWORD_COMPROMISED") {
               toast.error(t("errors.compromisedPassword"))
               return
@@ -152,6 +181,7 @@ export function SignupForm({
         },
       )
     } finally {
+      captcha.reset()
       setIsSubmitting(false)
     }
   }
@@ -261,6 +291,7 @@ export function SignupForm({
                 </FieldDescription>
               ) : null}
             </Field>
+            {captcha.widget}
             <Field>
               <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
                 {isSubmitting ? (
@@ -270,13 +301,14 @@ export function SignupForm({
               </Button>
               <SocialSignInButtons
                 providers={socialProviders}
-                callbackURL={`/${locale}/dashboard`}
+                callbackURL={appLink?.resumePath ?? `/${locale}/dashboard`}
                 disabled={isSubmitting}
               />
+              <GoogleOneTap config={oneTap} callbackURL={appLink?.resumePath ?? `/${locale}/dashboard`} context="signup" />
               <FieldDescription className="text-center sm:px-6">
                 {t("hasAccount")}{" "}
                 <Link
-                  href="/login"
+                  href={withAppContext("/login", appLink)}
                   className="underline-offset-4 hover:underline"
                 >
                   {t("signInLink")}

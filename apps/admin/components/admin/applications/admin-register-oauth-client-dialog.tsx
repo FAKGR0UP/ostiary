@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { CopyIcon, PlusCircleIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 import { Button } from "@ostiary/core/components/ui/button";
 import {
@@ -30,6 +31,7 @@ import {
 import { Textarea } from "@ostiary/core/components/ui/textarea";
 import { MotionPanel } from "@ostiary/core/components/motion/motion-panel";
 import { adminNotify } from "@ostiary/core/lib/admin/admin-notify";
+import { DEVICE_CODE_GRANT_TYPE } from "@ostiary/core/lib/admin/oauth-clients/oauth-client-admin.types";
 
 function parseRedirectUris(raw: string): string[] {
   return raw
@@ -49,6 +51,8 @@ export function AdminRegisterOAuthClientDialog({
 }: {
   onCreated: () => void;
 }) {
+  const t = useTranslations("admin.pages.applications.register");
+  const tc = useTranslations("admin.common");
   const [open, setOpen] = React.useState(false);
   const [step, setStep] = React.useState<"form" | "success">("form");
   const [clientName, setClientName] = React.useState("");
@@ -57,6 +61,7 @@ export function AdminRegisterOAuthClientDialog({
     "confidential"
   );
   const [skipConsent, setSkipConsent] = React.useState(false);
+  const [deviceCode, setDeviceCode] = React.useState(false);
   const [pending, setPending] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [issuedClientId, setIssuedClientId] = React.useState("");
@@ -68,6 +73,7 @@ export function AdminRegisterOAuthClientDialog({
     setRedirectUrisRaw("");
     setClientKind("confidential");
     setSkipConsent(false);
+    setDeviceCode(false);
     setFormError(null);
     setIssuedClientId("");
     setIssuedSecret(null);
@@ -78,7 +84,7 @@ export function AdminRegisterOAuthClientDialog({
     setFormError(null);
     const redirect_uris = parseRedirectUris(redirectUrisRaw);
     if (redirect_uris.length === 0) {
-      setFormError("Enter at least one redirect URI (one per line or comma-separated).");
+      setFormError(t("redirectUrisRequired"));
       return;
     }
     setPending(true);
@@ -92,7 +98,11 @@ export function AdminRegisterOAuthClientDialog({
           client_name: clientName.trim() || undefined,
           token_endpoint_auth_method:
             clientKind === "public" ? "none" : "client_secret_basic",
-          grant_types: ["authorization_code", "refresh_token"],
+          grant_types: [
+            "authorization_code",
+            "refresh_token",
+            ...(deviceCode ? [DEVICE_CODE_GRANT_TYPE] : []),
+          ],
           response_types: ["code"],
           type: clientKind === "public" ? "native" : "web",
           skip_consent: skipConsent,
@@ -106,7 +116,7 @@ export function AdminRegisterOAuthClientDialog({
           "error" in json &&
           typeof (json as { error?: unknown }).error === "string"
             ? (json as { error: string }).error
-            : "Could not register application";
+            : t("registerFailed");
         setFormError(err);
         return;
       }
@@ -120,7 +130,7 @@ export function AdminRegisterOAuthClientDialog({
       const o = asRecord(payload);
       const cid = o ? String(o.client_id ?? o.clientId ?? "") : "";
       if (!cid) {
-        setFormError("Server did not return a client_id.");
+        setFormError(t("missingClientId", { field: "client_id" }));
         return;
       }
       const secretRaw = o?.client_secret ?? o?.clientSecret;
@@ -131,7 +141,7 @@ export function AdminRegisterOAuthClientDialog({
       setIssuedClientId(cid);
       setIssuedSecret(secret);
       setStep("success");
-      adminNotify("OAuth application registered");
+      adminNotify(t("registered"));
       onCreated();
     } finally {
       setPending(false);
@@ -149,44 +159,46 @@ export function AdminRegisterOAuthClientDialog({
       <DialogTrigger asChild>
         <Button size="sm" type="button">
           <PlusCircleIcon />
-          Register application
+          {t("trigger")}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         {step === "form" ? (
           <form onSubmit={handleSubmit}>
             <DialogHeader>
-              <DialogTitle>Register OAuth application</DialogTitle>
+              <DialogTitle>{t("title")}</DialogTitle>
               <DialogDescription>
-                Creates a client tied to your account via{" "}
-                <code className="text-foreground">POST /api/admin/oauth-clients</code>{" "}
-                (trusted apps can set{" "}
-                <code className="text-foreground">skip_consent</code>). See{" "}
-                <a
-                  href="https://better-auth.com/docs/plugins/oauth-provider#create-client"
-                  className="font-medium text-foreground underline-offset-4 hover:underline"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Better Auth, Create client
-                </a>
-                .
+                {t.rich("description", {
+                  endpoint: "POST /api/admin/oauth-clients",
+                  field: "skip_consent",
+                  code: (c) => <code className="text-foreground">{c}</code>,
+                  link: (c) => (
+                    <a
+                      href="https://better-auth.com/docs/plugins/oauth-provider#create-client"
+                      className="font-medium text-foreground underline-offset-4 hover:underline"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {c}
+                    </a>
+                  ),
+                })}
               </DialogDescription>
             </DialogHeader>
             <MotionPanel>
             <FieldGroup className="py-4">
               <Field>
-                <FieldLabel htmlFor="oauth-reg-name">Application name</FieldLabel>
+                <FieldLabel htmlFor="oauth-reg-name">{t("nameLabel")}</FieldLabel>
                 <Input
                   id="oauth-reg-name"
-                  placeholder="My app"
+                  placeholder={t("namePlaceholder")}
                   value={clientName}
                   onChange={(e) => setClientName(e.target.value)}
                 />
               </Field>
               <Field>
                 <FieldLabel htmlFor="oauth-reg-redirects">
-                  Redirect URIs
+                  {t("redirectUrisLabel")}
                 </FieldLabel>
                 <Textarea
                   id="oauth-reg-redirects"
@@ -200,12 +212,13 @@ export function AdminRegisterOAuthClientDialog({
                   className="font-mono text-sm"
                 />
                 <p className="text-muted-foreground text-xs">
-                  One per line or comma-separated. HTTPS required except on
-                  localhost.
+                  {clientKind === "public"
+                    ? t("redirectUrisHintPublic")
+                    : t("redirectUrisHintConfidential")}
                 </p>
               </Field>
               <Field>
-                <FieldLabel>Client type</FieldLabel>
+                <FieldLabel>{t("clientTypeLabel")}</FieldLabel>
                 <Select
                   value={clientKind}
                   onValueChange={(v) =>
@@ -217,13 +230,38 @@ export function AdminRegisterOAuthClientDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="confidential">
-                      Confidential (client secret)
+                      {t("clientTypeConfidential")}
                     </SelectItem>
                     <SelectItem value="public">
-                      Public (PKCE, no secret)
+                      {t("clientTypePublic")}
                     </SelectItem>
                   </SelectContent>
                 </Select>
+              </Field>
+              <Field>
+                <div className="flex gap-3 rounded-md border border-border/80 bg-muted/30 p-3">
+                  <input
+                    id="oauth-reg-device-code"
+                    type="checkbox"
+                    className="mt-0.5 size-4 shrink-0 rounded border-input"
+                    checked={deviceCode}
+                    onChange={(e) => setDeviceCode(e.target.checked)}
+                  />
+                  <div className="grid gap-1">
+                    <Label
+                      htmlFor="oauth-reg-device-code"
+                      className="cursor-pointer font-medium leading-none"
+                    >
+                      {t("deviceCodeLabel")}
+                    </Label>
+                    <p className="text-muted-foreground text-xs leading-snug">
+                      {t.rich("deviceCodeHint", {
+                        path: "/device",
+                        code: (c) => <code>{c}</code>,
+                      })}
+                    </p>
+                  </div>
+                </div>
               </Field>
               <Field>
                 <div className="flex gap-3 rounded-md border border-border/80 bg-muted/30 p-3">
@@ -239,11 +277,10 @@ export function AdminRegisterOAuthClientDialog({
                       htmlFor="oauth-reg-skip-consent"
                       className="cursor-pointer font-medium leading-none"
                     >
-                      Skip consent (trusted client)
+                      {t("skipConsentLabel")}
                     </Label>
                     <p className="text-muted-foreground text-xs leading-snug">
-                      Users will not see the consent screen for this application.
-                      Use only for first-party or fully trusted integrations.
+                      {t("skipConsentHint")}
                     </p>
                   </div>
                 </div>
@@ -261,26 +298,26 @@ export function AdminRegisterOAuthClientDialog({
                 variant="outline"
                 onClick={() => setOpen(false)}
               >
-                Cancel
+                {tc("cancel")}
               </Button>
               <Button type="submit" disabled={pending}>
-                {pending ? "Creating…" : "Create application"}
+                {pending ? t("creating") : t("create")}
               </Button>
             </DialogFooter>
           </form>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Application created</DialogTitle>
+              <DialogTitle>{t("successTitle")}</DialogTitle>
               <DialogDescription>
                 {issuedSecret
-                  ? "Copy the client secret now, it may only be shown once."
-                  : "Public client, no secret is issued. Use PKCE at the token endpoint."}
+                  ? t("successWithSecret")
+                  : t("successPublic")}
               </DialogDescription>
             </DialogHeader>
             <FieldGroup className="py-4">
               <Field>
-                <FieldLabel>Client ID</FieldLabel>
+                <FieldLabel>{t("clientId")}</FieldLabel>
                 <div className="flex gap-2">
                   <Input
                     readOnly
@@ -291,7 +328,7 @@ export function AdminRegisterOAuthClientDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    aria-label="Copy client ID"
+                    aria-label={t("copyClientId")}
                     onClick={() => {
                       void navigator.clipboard.writeText(issuedClientId);
                     }}
@@ -302,7 +339,7 @@ export function AdminRegisterOAuthClientDialog({
               </Field>
               {issuedSecret ? (
                 <Field>
-                  <FieldLabel>Client secret</FieldLabel>
+                  <FieldLabel>{t("clientSecret")}</FieldLabel>
                   <div className="flex gap-2">
                     <Input
                       readOnly
@@ -313,7 +350,7 @@ export function AdminRegisterOAuthClientDialog({
                       type="button"
                       size="icon"
                       variant="outline"
-                      aria-label="Copy client secret"
+                      aria-label={t("copyClientSecret")}
                       onClick={() => {
                         void navigator.clipboard.writeText(issuedSecret);
                       }}
@@ -332,7 +369,7 @@ export function AdminRegisterOAuthClientDialog({
                   reset();
                 }}
               >
-                Done
+                {tc("done")}
               </Button>
             </DialogFooter>
           </>

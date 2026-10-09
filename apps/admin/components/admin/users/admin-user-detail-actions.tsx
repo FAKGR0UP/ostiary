@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, LogOutIcon, UserRoundSearch } from "lucide-react";
+import { DownloadIcon, Loader2, LogOutIcon, UserRoundSearch } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useLocale } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { AdminUserRowActions } from "@/components/admin/users/admin-user-row-actions";
@@ -18,6 +18,8 @@ import {
 } from "@ostiary/core/components/ui/dialog";
 import { authClient } from "@/lib/auth-client";
 import {
+  exportUserData,
+  resetUserTwoFactor,
   revokeAllUserSessions,
   revokeUserSession,
 } from "@/app/[locale]/(console)/users/[id]/actions";
@@ -43,6 +45,8 @@ export function AdminUserDetailActions({
 }) {
   const router = useRouter();
   const locale = useLocale();
+  const t = useTranslations("admin.pages.users.detailActions");
+  const tc = useTranslations("admin.common");
   const isSelf = user.id === currentUserId;
   const [confirm, setConfirm] = React.useState<"impersonate" | "signout" | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -52,7 +56,7 @@ export function AdminUserDetailActions({
     try {
       const { error } = await authClient.admin.impersonateUser({ userId: user.id });
       if (error) {
-        toast.error(error.message ?? "Could not impersonate this user.");
+        toast.error(error.message ?? t("impersonateError"));
         return;
       }
       // The session cookie is shared across apps; continue as the user on their dashboard.
@@ -67,10 +71,10 @@ export function AdminUserDetailActions({
     try {
       const { ok, count } = await revokeAllUserSessions(user.id);
       if (!ok) {
-        toast.error("Could not sign this user out.");
+        toast.error(t("signOutError"));
         return;
       }
-      toast.success(count === 1 ? "Signed out of 1 session" : `Signed out of ${count} sessions`);
+      toast.success(t("signedOut", { count }));
       setConfirm(null);
       router.refresh();
     } finally {
@@ -78,17 +82,43 @@ export function AdminUserDetailActions({
     }
   }
 
+  async function exportData() {
+    setBusy(true);
+    try {
+      const result = await exportUserData(user.id).catch(() => ({ ok: false as const }));
+      if (!result.ok) {
+        toast.error(t("exportError"));
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([result.json], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      toast.success(t("exported"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
+      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void exportData()}>
+        <DownloadIcon className="size-4" aria-hidden />
+        {t("exportData")}
+      </Button>
       {isSelf ? null : (
         <>
           <Button type="button" variant="outline" size="sm" onClick={() => setConfirm("impersonate")} disabled={Boolean(user.banned)}>
             <UserRoundSearch className="size-4" aria-hidden />
-            Impersonate
+            {t("impersonate")}
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={() => setConfirm("signout")}>
             <LogOutIcon className="size-4" aria-hidden />
-            Sign out everywhere
+            {t("signOutEverywhere")}
           </Button>
         </>
       )}
@@ -105,17 +135,19 @@ export function AdminUserDetailActions({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {confirm === "impersonate" ? `Sign in as ${user.email}?` : `Sign ${user.email} out everywhere?`}
+              {confirm === "impersonate"
+                ? t("impersonateTitle", { email: user.email })
+                : t("signOutTitle", { email: user.email })}
             </DialogTitle>
             <DialogDescription>
               {confirm === "impersonate"
-                ? "You will see the account dashboard exactly as this user does, for up to an hour. A banner there lets you stop and return. This is recorded in the audit log."
-                : "Every session of this user ends now, on every device. They will need to sign in again."}
+                ? t("impersonateDescription")
+                : t("signOutDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={() => setConfirm(null)}>
-              Cancel
+              {tc("cancel")}
             </Button>
             <Button
               type="button"
@@ -124,7 +156,7 @@ export function AdminUserDetailActions({
               onClick={() => void (confirm === "impersonate" ? impersonate() : signOutEverywhere())}
             >
               {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-              {confirm === "impersonate" ? "Impersonate" : "Sign out everywhere"}
+              {confirm === "impersonate" ? t("impersonate") : t("signOutEverywhere")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -136,6 +168,7 @@ export function AdminUserDetailActions({
 /** Revoke button for one row of the sessions table. */
 export function RevokeSessionButton({ userId, sessionId }: { userId: string; sessionId: string }) {
   const router = useRouter();
+  const t = useTranslations("admin.pages.users.detailActions");
   const [busy, setBusy] = React.useState(false);
   return (
     <Button
@@ -148,16 +181,68 @@ export function RevokeSessionButton({ userId, sessionId }: { userId: string; ses
         try {
           const { ok } = await revokeUserSession(userId, sessionId);
           if (ok) {
-            toast.success("Session revoked");
+            toast.success(t("sessionRevoked"));
             router.refresh();
-          } else toast.error("Could not revoke this session.");
+          } else toast.error(t("revokeError"));
         } finally {
           setBusy(false);
         }
       }}
     >
       {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-      Revoke
+      {t("revoke")}
     </Button>
+  );
+}
+
+/** Turns off a user's two-factor authentication, after a confirmation. Audited. */
+export function ResetTwoFactorButton({ userId, email }: { userId: string; email: string }) {
+  const router = useRouter();
+  const t = useTranslations("admin.pages.users.detailActions");
+  const tc = useTranslations("admin.common");
+  const [open, setOpen] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+
+  async function reset() {
+    setBusy(true);
+    try {
+      const { ok } = await resetUserTwoFactor(userId);
+      if (!ok) {
+        toast.error(t("resetTwoFactorError"));
+        return;
+      }
+      toast.success(t("twoFactorReset"));
+      setOpen(false);
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+        {t("reset")}
+      </Button>
+      <Dialog open={open} onOpenChange={(next) => !next && !busy && setOpen(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("resetTwoFactorTitle", { email })}</DialogTitle>
+            <DialogDescription>
+              {t("resetTwoFactorDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setOpen(false)}>
+              {tc("cancel")}
+            </Button>
+            <Button type="button" variant="destructive" disabled={busy} onClick={() => void reset()}>
+              {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+              {t("reset")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

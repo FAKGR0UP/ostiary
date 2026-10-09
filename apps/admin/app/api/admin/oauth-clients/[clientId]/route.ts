@@ -8,7 +8,8 @@ import { assertRequestBodyWithinLimit } from "@ostiary/core/lib/api/request-body
 import {
   parseUpdateOAuthClientBody,
 } from "@ostiary/core/lib/admin/oauth-clients/oauth-client-admin.validation";
-import { updateOAuthClientForAdmin } from "@/lib/oauth-client-admin.service";
+import { clientRegistrationSource } from "@ostiary/core/lib/client-registration";
+import { deleteOAuthClientForAdmin, updateOAuthClientForAdmin } from "@/lib/oauth-client-admin.service";
 import { requireAdminApiRequest } from "@/lib/require-admin-api-request";
 import { handleError, ValidationError } from "@ostiary/core/lib/errors";
 
@@ -44,6 +45,11 @@ export async function PATCH(req: Request, context: RouteContext) {
       throw new ValidationError(parsed.error);
     }
 
+    // Self-registered clients are unreviewed: they always show the consent screen.
+    if (parsed.value.skip_consent && (await clientRegistrationSource(clientId)) !== "admin") {
+      throw new ValidationError("A self-registered client cannot skip the consent screen.");
+    }
+
     const data = await updateOAuthClientForAdmin(
       authz.requestHeaders,
       clientId,
@@ -57,6 +63,30 @@ export async function PATCH(req: Request, context: RouteContext) {
       ipAddress: clientIp(authz.requestHeaders),
     });
     return NextResponse.json({ data });
+  } catch (error) {
+    const { message, statusCode } = handleError(error);
+    return NextResponse.json({ error: message }, { status: statusCode });
+  }
+}
+
+/**
+ * Deletes an admin-registered client. Its tokens and consents go with it. Audited by the auth
+ * server's hook (`oauth_client.delete`). Self-registered clients are deleted from the
+ * Applications page's server action instead.
+ */
+export async function DELETE(req: Request, context: RouteContext) {
+  try {
+    const authz = await requireAdminApiRequest();
+    if (!authz.ok) {
+      return NextResponse.json({ error: authz.message }, { status: authz.status });
+    }
+    const { clientId } = await context.params;
+    if (!clientId?.trim()) {
+      throw new ValidationError("Missing client id");
+    }
+    assertAdminWriteRateLimit(req);
+    await deleteOAuthClientForAdmin(authz.requestHeaders, clientId);
+    return NextResponse.json({ data: { client_id: clientId } });
   } catch (error) {
     const { message, statusCode } = handleError(error);
     return NextResponse.json({ error: message }, { status: statusCode });

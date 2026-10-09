@@ -8,6 +8,97 @@
       "when": 1791341410518,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791441141926,
+      "tag": "0001_device_code",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791442693388,
+      "tag": "0002_two_factor",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791443352834,
+      "tag": "0003_scim_provisioning",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791444355630,
+      "tag": "0004_app_setting",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791473689613,
+      "tag": "0005_rate_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791475026589,
+      "tag": "0006_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791475411902,
+      "tag": "0007_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791475902323,
+      "tag": "0008_social_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791551458818,
+      "tag": "0009_app_icons",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791555498111,
+      "tag": "0010_google_one_tap",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791557446728,
+      "tag": "0011_org_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791557792508,
+      "tag": "0012_app_branding",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791573964365,
+      "tag": "0013_oauth_client_admin_registered",
+      "breakpoints": true
     }
   ]
 }
